@@ -26,12 +26,27 @@
 #include "clustering_key_filter.hh"
 #include <boost/range/algorithm/heap_algorithm.hpp>
 
-template <typename Accounter>
+template <bool Reversing, typename Accounter>
 class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public Accounter {
-    struct rows_position {
-        mutation_partition::rows_type::const_iterator _position;
-        mutation_partition::rows_type::const_iterator _end;
+    template<bool> struct rows_position_;
+    template<> struct rows_position_<false> {
+        using iter_type = mutation_partition::rows_type::const_iterator;
+        iter_type _position, _end;
     };
+    template<> struct rows_position_<true> {
+        using iter_type = mutation_partition::rows_type::const_reverse_iterator;
+        // The field order is reversed on purpose.
+        iter_type _end, _position;
+    };
+    using rows_position = rows_position_<Reversing>;
+    using rows_iter_type = typename rows_position::iter_type;
+
+    static rows_iter_type make_iterator(mutation_partition::rows_type::const_iterator it) {
+        if constexpr (Reversing)
+            return std::make_reverse_iterator(it);
+        else
+            return it;
+    }
 
     class heap_compare {
         position_in_partition::less_compare _less;
@@ -51,6 +66,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
     // allocation section retry (_clustering_rows).
     class lsa_partition_reader {
         const schema& _schema;
+        const schema_ptr _partition_schema;
         reader_permit _permit;
         heap_compare _heap_cmp;
 
@@ -89,14 +105,15 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
             _clustering_rows.clear();
             _range_tombstones.clear();
 
-            rows_entry::tri_compare rows_cmp(_schema);
+            rows_entry::tri_compare rows_cmp(*_partition_schema);
             for (auto&& v : _snapshot->versions()) {
-                mutation_partition::rows_type::const_iterator cr_end = v.partition().upper_bound(_schema, ck_range);
-                auto cr = [&] () -> mutation_partition::rows_type::const_iterator {
+                rows_iter_type cr_end = make_iterator(v.partition().upper_bound(*_partition_schema, ck_range));
+
+                auto cr = [&] () -> rows_iter_type {
                     if (last_row) {
-                        return v.partition().clustered_rows().upper_bound(*last_row, rows_cmp);
+                        return make_iterator(v.partition().clustered_rows().upper_bound(*last_row, rows_cmp));
                     } else {
-                        return v.partition().lower_bound(_schema, ck_range);
+                        return make_iterator(v.partition().lower_bound(*_partition_schema, ck_range));
                     }
                 }();
 
@@ -106,9 +123,9 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
 
                 range_tombstone_list::iterator_range rt_slice = [&] () {
                     if (last_rts) {
-                        return v.partition().row_tombstones().upper_slice(_schema, *last_rts, bound_view::from_range_end(ck_range));
+                        return v.partition().row_tombstones().upper_slice(*_partition_schema, *last_rts, bound_view::from_range_end(ck_range));
                     } else {
-                        return v.partition().row_tombstones().slice(_schema, ck_range);
+                        return v.partition().row_tombstones().slice(*_partition_schema, ck_range);
                     }
                 }();
                 if (rt_slice.begin() != rt_slice.end()) {
@@ -133,11 +150,16 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
             return e;
         }
 
-        const range_tombstone& pop_range_tombstone() {
+        range_tombstone pop_range_tombstone() {
             boost::range::pop_heap(_range_tombstones, _heap_cmp);
             auto& current = _range_tombstones.back();
-            const range_tombstone& rt = *current.begin();
-            current.advance_begin(1);
+            range_tombstone rt = *(Reversing ? std::prev(current.end()) : current.begin());
+            if constexpr (Reversing) {
+                current.advance_end(-1);
+                rt.reverse();
+            } else {
+                current.advance_begin(1);
+            }
             if (current.begin() == current.end()) {
                 _range_tombstones.pop_back();
             } else {
@@ -148,14 +170,21 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
 
         // Valid if has_more_rows()
         const rows_entry& peek_row() const {
-            return *_clustering_rows.front()._position;
+            const auto& r = _clustering_rows.front();
+            return *r._position;
         }
         bool has_more_rows() const {
             return !_clustering_rows.empty();
         }
 
-        const range_tombstone& peek_range_tombstone() const {
-            return *_range_tombstones.front().begin();
+        range_tombstone peek_range_tombstone() const {
+            if constexpr (Reversing) {
+                range_tombstone rt = *std::prev(_range_tombstones.front().end());
+                rt.reverse();
+                return rt;
+            } else {
+                return *_range_tombstones.front().begin();
+            }
         }
         bool has_more_range_tombstones() const {
             return !_range_tombstones.empty();
@@ -165,6 +194,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
                                       logalloc::region& region, logalloc::allocating_section& read_section,
                                       bool digest_requested)
             : _schema(s)
+            , _partition_schema(Reversing ? s.make_reversed() : s.shared_from_this())
             , _permit(permit)
             , _heap_cmp(s)
             , _snapshot(std::move(snp))
@@ -247,13 +277,12 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
                         && !rt_less(pos, peek_range_tombstone().position())
                         && (_rt_stream.empty() || !rt_less(_rt_stream.peek_next().position(), peek_range_tombstone().position()))) {
                     range_tombstone rt = pop_range_tombstone();
-                    if (rt.trim(_schema,
+                    if (rt.trim(*_partition_schema,
                                 position_in_partition_view::for_range_start(ck_range),
                                 position_in_partition_view::for_range_end(ck_range))) {
                         _rt_stream.apply(std::move(rt));
                     }
                 }
-
                 return _rt_stream.get_next(std::move(pos));
             });
         }
@@ -392,7 +421,7 @@ public:
     }
 };
 
-template <typename Accounter, typename... Args>
+template <bool Reversing, typename Accounter, typename... Args>
 inline flat_mutation_reader
 make_partition_snapshot_flat_reader(schema_ptr s,
                                     reader_permit permit,
@@ -406,7 +435,7 @@ make_partition_snapshot_flat_reader(schema_ptr s,
                                     streamed_mutation::forwarding fwd,
                                     Args&&... args)
 {
-    auto res = make_flat_mutation_reader<partition_snapshot_flat_reader<Accounter>>(std::move(s), std::move(permit), std::move(dk),
+    auto res = make_flat_mutation_reader<partition_snapshot_flat_reader<Reversing, Accounter>>(std::move(s), std::move(permit), std::move(dk),
             snp, std::move(crr), digest_requested, region, read_section, std::move(pointer_to_container), std::forward<Args>(args)...);
     if (fwd) {
         return make_forwardable(std::move(res)); // FIXME: optimize

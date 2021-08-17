@@ -21,6 +21,7 @@
 
 
 #include <boost/test/unit_test.hpp>
+#include "mutation_fragment.hh"
 #include "service/priority_manager.hh"
 #include "database.hh"
 #include "utils/UUID_gen.hh"
@@ -39,6 +40,7 @@
 #include "test/lib/random_utils.hh"
 #include "test/lib/log.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
+#include "partition_slice_builder.hh"
 
 static api::timestamp_type next_timestamp() {
     static thread_local api::timestamp_type next_timestamp = 1;
@@ -513,6 +515,51 @@ SEASTAR_TEST_CASE(test_exception_safety_of_single_partition_reads) {
             assert_that(mt->make_flat_reader(s, semaphore.make_permit(), dht::partition_range::make_singular(ms[1].decorated_key())))
                 .produces(ms[1]);
         });
+    });
+}
+
+SEASTAR_TEST_CASE(test_memtable_reversing_reader) {
+    return seastar::async([] {
+        auto s = schema_builder("ks", "cf")
+                .with_column("pk", bytes_type, column_kind::partition_key)
+                .with_column("ck", bytes_type, column_kind::clustering_key)
+                .with_column("col", bytes_type, column_kind::regular_column)
+                .build();
+        tests::reader_concurrency_semaphore_wrapper semaphore;
+
+        auto make_ck = [&s](int k) {
+            return clustering_key::from_single_value(*s, serialized(k));
+        };
+        auto make_range = [](const schema& s, clustering_key&& ck_start, clustering_key&& ck_end) {
+            return partition_slice_builder(s).with_range(query::clustering_range(ck_start, ck_end)).build();
+        };
+
+        auto mt = make_lw_shared<memtable>(s);
+        auto mut = make_unique_mutation(s);
+
+        for (int i = 1; i < 5; ++i) {
+            bytes v = {(char) i};
+            mut.set_clustered_cell(make_ck(i), to_bytes("col"), data_value(v), next_timestamp());
+        }
+
+        auto new_tombstone = tombstone(next_timestamp(), gc_clock::time_point());
+        mut.partition().apply_row_tombstone(*s, {make_ck(1), bound_kind::incl_start, make_ck(2), bound_kind::incl_end, new_tombstone});
+
+        mt->apply(mut);
+        
+        auto pr = dht::partition_range::make_singular(mut.decorated_key());
+
+        auto slice = make_range(*s, make_ck(0), make_ck(3));
+        slice.options.set(query::partition_slice::option::reversed);
+        auto reader = mt->make_flat_reader(s->make_reversed(), semaphore.make_permit(), pr, slice, default_priority_class(), nullptr, streamed_mutation::forwarding::no, mutation_reader::forwarding::no);
+        auto rd = assert_that(std::move(reader));
+        rd.produces_partition_start(mut.decorated_key());
+        rd.produces_row_with_key(make_ck(3));
+        rd.produces_range_tombstone({make_ck(2), bound_kind::incl_start, make_ck(1), bound_kind::incl_end, new_tombstone});
+        rd.produces_row_with_key(make_ck(2));
+        rd.produces_row_with_key(make_ck(1));
+        rd.produces_partition_end();
+        rd.produces_end_of_stream();
     });
 }
 
