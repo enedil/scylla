@@ -817,6 +817,18 @@ mutation_source memtable::as_data_source() {
         return mt->make_flat_reader(std::move(s), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr);
     });
 }
+mutation_source memtable::as_reverse_data_source() {
+    return mutation_source([mt = shared_from_this()] (schema_ptr s,
+            reader_permit permit,
+            const dht::partition_range& range,
+            const query::partition_slice& slice,
+            const io_priority_class& pc,
+            tracing::trace_state_ptr trace_state,
+            streamed_mutation::forwarding fwd,
+            mutation_reader::forwarding fwd_mr) {
+        return mt->make_flat_reader(s->make_reversed(), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr);
+    });
+}
 
 memtable_entry::memtable_entry(memtable_entry&& o) noexcept
     : _schema(std::move(o._schema))

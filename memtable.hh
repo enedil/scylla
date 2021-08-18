@@ -262,6 +262,7 @@ public:
     flat_mutation_reader make_flush_reader(schema_ptr, reader_permit permit, const io_priority_class& pc);
 
     mutation_source as_data_source();
+    mutation_source as_reverse_data_source();
 
     bool empty() const { return partitions.empty(); }
     void mark_flushed(mutation_source) noexcept;

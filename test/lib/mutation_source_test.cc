@@ -43,6 +43,7 @@
 #include "types/list.hh"
 #include "types/set.hh"
 #include <seastar/util/closeable.hh>
+#include "db/chained_delegating_reader.hh"
 #include "utils/UUID_gen.hh"
 
 // partitions must be sorted by decorated key
@@ -1757,6 +1758,31 @@ void run_mutation_source_tests(populate_fn_ex populate, bool with_partition_rang
                                               mutation_reader::forwarding mr_fwd) {
             return upgrade_to_v2(
                     ms.make_reader(s, std::move(permit), pr, slice, pc, std::move(tr), fwd, mr_fwd));
+        });
+    }, with_partition_range_forwarding);
+
+   run_mutation_reader_tests([populate] (schema_ptr s, const std::vector<mutation>& m, gc_clock::time_point t) -> mutation_source {
+        auto s_rev = s->make_reversed();
+        std::vector<mutation> mm;
+        for (const mutation& r : m) {
+            mutation_rebuilder b(r.decorated_key(), s->make_reversed());
+            auto res = mutation(r).consume(b, consume_in_reverse::yes);
+            mm.push_back(*res.result);
+        }
+
+        return mutation_source([ms = populate(s_rev, mm, t)] (schema_ptr s,
+                                              reader_permit permit,
+                                              const dht::partition_range& pr,
+                                              const query::partition_slice& slice,
+                                              const io_priority_class& pc,
+                                              tracing::trace_state_ptr tr,
+                                              streamed_mutation::forwarding fwd,
+                                              mutation_reader::forwarding mr_fwd) {
+            query::partition_slice* rev_slice = new query::partition_slice(slice);
+            rev_slice->make_reversed();
+            return make_flat_mutation_reader<chained_delegating_reader>(s, [=, &ms, &pc, &pr] (db::timeout_clock::time_point) {
+                return make_ready_future<flat_mutation_reader>(ms.make_reader(s, permit, pr, *rev_slice, pc, std::move(tr), fwd, mr_fwd));
+            }, permit, [rev_slice] { delete rev_slice; });
         });
     }, with_partition_range_forwarding);
 }

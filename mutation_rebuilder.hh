@@ -38,6 +38,7 @@ public:
     }
 
     stop_iteration consume(range_tombstone&& rt) {
+        rt.reverse();
         _m.partition().apply_row_tombstone(*_m.schema(), std::move(rt));
         return stop_iteration::no;
     }
@@ -57,6 +58,12 @@ public:
 
     mutation_opt consume_end_of_stream() {
         return mutation_opt(std::move(_m));
+    }
+
+    void consume_new_partition(const dht::decorated_key& dk) {
+    }
+    stop_iteration consume_end_of_partition() {
+        return stop_iteration::yes;
     }
 };
 

@@ -120,6 +120,39 @@ SEASTAR_TEST_CASE(test_memtable_with_many_versions_conforms_to_mutation_source) 
     });
 }
 
+SEASTAR_TEST_CASE(test_reverse_memtable_with_many_versions_conforms_to_mutation_source) {
+    return seastar::async([] {
+        tests::reader_concurrency_semaphore_wrapper semaphore;
+        lw_shared_ptr<memtable> mt;
+        std::vector<flat_mutation_reader> readers;
+        auto clear_readers = [&readers] {
+            parallel_for_each(readers, [] (flat_mutation_reader& rd) {
+                return rd.close();
+            }).finally([&readers] {
+                readers.clear();
+            }).get();
+        };
+        auto cleanup_readers = defer([&] { clear_readers(); });
+        std::deque<dht::partition_range> ranges_storage;
+        run_mutation_source_tests([&] (schema_ptr s, const std::vector<mutation>& muts) {
+            clear_readers();
+            mt = make_lw_shared<memtable>(s);
+            schema_ptr reversed_schema = s->make_reversed();
+
+            for (auto&& m : muts) {
+                mt->apply(m);
+                // Create reader so that each mutation is in a separate version
+                flat_mutation_reader rd = mt->make_flat_reader(reversed_schema, semaphore.make_permit(), ranges_storage.emplace_back(dht::partition_range::make_singular(m.decorated_key())));
+                rd.set_max_buffer_size(1);
+                rd.fill_buffer(db::no_timeout).get();
+                readers.emplace_back(std::move(rd));
+            }
+
+            return mt->as_reverse_data_source();
+        });
+    });
+}
+
 SEASTAR_TEST_CASE(test_memtable_flush_reader) {
     // Memtable flush reader is severly limited, it always assumes that
     // the full partition range is being read and that
