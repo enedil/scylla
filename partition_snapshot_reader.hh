@@ -66,7 +66,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
     // allocation section retry (_clustering_rows).
     class lsa_partition_reader {
         const schema& _schema;
-        const schema_ptr _partition_schema;
+        const schema_ptr _snapshot_schema;
         reader_permit _permit;
         heap_compare _heap_cmp;
 
@@ -105,15 +105,15 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
             _clustering_rows.clear();
             _range_tombstones.clear();
 
-            rows_entry::tri_compare rows_cmp(*_partition_schema);
+            rows_entry::tri_compare rows_cmp(*_snapshot_schema);
             for (auto&& v : _snapshot->versions()) {
-                rows_iter_type cr_end = make_iterator(v.partition().upper_bound(*_partition_schema, ck_range));
+                rows_iter_type cr_end = make_iterator(v.partition().upper_bound(*_snapshot_schema, ck_range));
 
                 auto cr = [&] () -> rows_iter_type {
                     if (last_row) {
                         return make_iterator(v.partition().clustered_rows().upper_bound(*last_row, rows_cmp));
                     } else {
-                        return make_iterator(v.partition().lower_bound(*_partition_schema, ck_range));
+                        return make_iterator(v.partition().lower_bound(*_snapshot_schema, ck_range));
                     }
                 }();
 
@@ -123,9 +123,9 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
 
                 range_tombstone_list::iterator_range rt_slice = [&] () {
                     if (last_rts) {
-                        return v.partition().row_tombstones().upper_slice(*_partition_schema, *last_rts, bound_view::from_range_end(ck_range));
+                        return v.partition().row_tombstones().upper_slice(*_snapshot_schema, *last_rts, bound_view::from_range_end(ck_range));
                     } else {
-                        return v.partition().row_tombstones().slice(*_partition_schema, ck_range);
+                        return v.partition().row_tombstones().slice(*_snapshot_schema, ck_range);
                     }
                 }();
                 if (rt_slice.begin() != rt_slice.end()) {
@@ -194,7 +194,7 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
                                       logalloc::region& region, logalloc::allocating_section& read_section,
                                       bool digest_requested)
             : _schema(s)
-            , _partition_schema(Reversing ? s.make_reversed() : s.shared_from_this())
+            , _snapshot_schema(Reversing ? s.make_reversed() : s.shared_from_this())
             , _permit(permit)
             , _heap_cmp(s)
             , _snapshot(std::move(snp))
@@ -277,7 +277,8 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
                         && !rt_less(pos, peek_range_tombstone().position())
                         && (_rt_stream.empty() || !rt_less(_rt_stream.peek_next().position(), peek_range_tombstone().position()))) {
                     range_tombstone rt = pop_range_tombstone();
-                    if (rt.trim(*_partition_schema,
+                    //partition_snapshot_logger.trace("popped {}", rt);
+                    if (rt.trim(*_snapshot_schema,
                                 position_in_partition_view::for_range_start(ck_range),
                                 position_in_partition_view::for_range_end(ck_range))) {
                         _rt_stream.apply(std::move(rt));
