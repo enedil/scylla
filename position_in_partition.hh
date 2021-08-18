@@ -205,6 +205,16 @@ public:
         return bound_view(*_ck, _bound_weight == bound_weight::before_all_prefixed ? bound_kind::excl_end : bound_kind::incl_end);
     }
 
+    position_in_partition_view reversed() const {
+        constexpr int8_t before_all_prefixed = static_cast<int8_t>(bound_weight::before_all_prefixed);
+        constexpr int8_t after_all_prefixed = static_cast<int8_t>(bound_weight::after_all_prefixed);
+        static_assert(before_all_prefixed + after_all_prefixed == 0);
+        static_assert(static_cast<int8_t>(bound_weight::equal) == 0);
+
+        bound_weight k = static_cast<bound_weight>(-static_cast<int8_t>(get_bound_weight()));
+        return {region(), k, _ck};
+    }
+
     class printer {
         const schema& _schema;
         const position_in_partition_view& _pipv;
