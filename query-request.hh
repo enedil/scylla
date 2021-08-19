@@ -221,6 +221,27 @@ public:
         _partition_row_limit_low_bits = static_cast<uint64_t>(limit);
         _partition_row_limit_high_bits = static_cast<uint64_t>(limit >> 32);
     }
+    void make_reversed() {
+        using interval = nonwrapping_interval<clustering_key_prefix>;
+        if (!options.contains(partition_slice::option::reversed)) {
+            options.set<partition_slice::option::reversed>();
+            std::reverse(_row_ranges.begin(), _row_ranges.end());
+            for (auto& row_range: _row_ranges) {
+                if (!row_range.is_singular()) {
+                    if (row_range.start() && row_range.end()) {
+                        row_range = interval::make(*row_range.end(), *row_range.start());
+                    } else if (row_range.start()) {
+                        row_range = interval::make_ending_with(*row_range.start());
+                    } else if (row_range.end()) {
+                        row_range = interval::make_starting_with(*row_range.end());
+                    } else {
+                        // Don't touch.
+                    }
+                }
+            }
+        }
+
+    }
 
     friend std::ostream& operator<<(std::ostream& out, const partition_slice& ps);
     friend std::ostream& operator<<(std::ostream& out, const specific_ranges& ps);
