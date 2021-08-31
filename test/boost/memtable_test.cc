@@ -41,6 +41,7 @@
 #include "test/lib/log.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
 #include "partition_slice_builder.hh"
+#include "db/chained_delegating_reader.hh"
 
 static api::timestamp_type next_timestamp() {
     static thread_local api::timestamp_type next_timestamp = 1;
@@ -72,6 +73,28 @@ std::vector<mutation> make_ring(schema_ptr s, int n_mutations) {
     return ring;
 }
 
+static mutation_source make_memtable_reverse_mutation_source(lw_shared_ptr<memtable>&& mt) {
+    return mutation_source([mt = std::move(mt)] (schema_ptr s,
+                                      reader_permit permit,
+                                      const dht::partition_range& pr,
+                                      const query::partition_slice& slice,
+                                      const io_priority_class& pc,
+                                      tracing::trace_state_ptr tr,
+                                      streamed_mutation::forwarding fwd,
+                                      mutation_reader::forwarding mr_fwd) {
+        // TODO: now it is assumed that the memtable takes slices in half-reversed format (i.e. [4, 6], [2, 3]).
+        // This is the format needed by most of the memtable code. In future, it is expected, that the queries 
+        // will receive native-reversed format ([6, 4], [3, 2]). Change the following line when this change happens.
+        auto rev_slice = make_lw_shared<query::partition_slice>(query::legacy_reverse_slice_to_native_reverse_slice(*s, slice));
+        rev_slice->options.set(query::partition_slice::option::reversed);
+        auto chained_fun = [=, &mt, &pc, &pr] () {
+            auto rd = mt->make_flat_reader(s, permit, pr, *rev_slice, pc, std::move(tr), fwd, mr_fwd);
+            return make_ready_future<flat_mutation_reader>(std::move(rd));
+        };
+        return make_flat_mutation_reader<chained_delegating_reader>(s, std::move(chained_fun), permit, [rev_slice] { /* hold the slice alive */ });
+    });
+}
+
 SEASTAR_TEST_CASE(test_memtable_conforms_to_mutation_source) {
     return seastar::async([] {
         run_mutation_source_tests([](schema_ptr s, const std::vector<mutation>& partitions) {
@@ -84,6 +107,22 @@ SEASTAR_TEST_CASE(test_memtable_conforms_to_mutation_source) {
             logalloc::shard_tracker().full_compaction();
 
             return mt->as_data_source();
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_reverse_memtable_conforms_to_mutation_source) {
+    return seastar::async([] {
+        run_mutation_source_tests([](schema_ptr s, const std::vector<mutation>& partitions) {
+            auto mt = make_lw_shared<memtable>(s->make_reversed());
+
+            for (auto&& m : partitions) {
+                mt->apply(reverse(m));
+            }
+
+            logalloc::shard_tracker().full_compaction();
+
+            return make_memtable_reverse_mutation_source(std::move(mt));
         });
     });
 }
@@ -119,6 +158,40 @@ SEASTAR_TEST_CASE(test_memtable_with_many_versions_conforms_to_mutation_source) 
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_reverse_memtable_with_many_versions_conforms_to_mutation_source) {
+    return seastar::async([] {
+        tests::reader_concurrency_semaphore_wrapper semaphore;
+        lw_shared_ptr<memtable> mt;
+        std::vector<flat_mutation_reader> readers;
+        auto clear_readers = [&readers] {
+            parallel_for_each(readers, [] (flat_mutation_reader& rd) {
+                return rd.close();
+            }).finally([&readers] {
+                readers.clear();
+            }).get();
+        };
+        auto cleanup_readers = defer([&] { clear_readers(); });
+        std::deque<dht::partition_range> ranges_storage;
+        run_mutation_source_tests([&] (schema_ptr s, const std::vector<mutation>& muts) {
+            clear_readers();
+            auto s_rev = s->make_reversed();
+            mt = make_lw_shared<memtable>(s_rev);
+
+            for (auto&& m : muts) {
+                mt->apply(reverse(m));
+                // Create reader so that each mutation is in a separate version
+                flat_mutation_reader rd = mt->make_flat_reader(s_rev, semaphore.make_permit(), ranges_storage.emplace_back(dht::partition_range::make_singular(m.decorated_key())));
+                rd.set_max_buffer_size(1);
+                rd.fill_buffer().get();
+                readers.emplace_back(std::move(rd));
+            }
+
+            return make_memtable_reverse_mutation_source(std::move(mt));
+        });
+    });
+}
+
 
 SEASTAR_TEST_CASE(test_memtable_flush_reader) {
     // Memtable flush reader is severly limited, it always assumes that
