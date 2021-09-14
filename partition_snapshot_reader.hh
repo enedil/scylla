@@ -24,6 +24,7 @@
 #include "partition_version.hh"
 #include "flat_mutation_reader.hh"
 #include "clustering_key_filter.hh"
+#include "query-request.hh"
 #include <boost/range/algorithm/heap_algorithm.hpp>
 
 template <bool Reversing, typename Accounter>
@@ -287,9 +288,17 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
                         && !rt_less(pos, peek_range_tombstone().position())
                         && (_rt_stream.empty() || !rt_less(_rt_stream.peek_next().position(), peek_range_tombstone().position()))) {
                     range_tombstone rt = pop_range_tombstone();
-                    if (rt.trim(*_snapshot_schema,
-                                position_in_partition_view::for_range_start(ck_range),
-                                position_in_partition_view::for_range_end(ck_range))) {
+
+                    // To avoid copying ck_range even if we are not reversing, let's make this hack.
+                    std::optional<query::clustering_range> ck_range_opt;
+                    if (Reversing)
+                        ck_range_opt = query::reverse_clustering_range(ck_range);
+
+                    const query::clustering_range& ck_range_ref = ck_range_opt ? *ck_range_opt : ck_range;
+
+                    if (rt.trim(_schema,
+                                position_in_partition_view::for_range_start(ck_range_ref),
+                                position_in_partition_view::for_range_end(ck_range_ref))) {
                         _rt_stream.apply(std::move(rt));
                     }
                 }
@@ -325,6 +334,18 @@ private:
         }
     }
 
+    static position_in_partition_view for_range_end_in_half_reversed(const query::clustering_range& r) {
+        if constexpr (Reversing) {
+            // TODO: use reversed<clustering_key_prefix>. If for_range_end(reversed<clustering_key_prefix>(r))
+            // was returned, this constitues a return of a reference to an automatic variable.
+            auto bv = bound_view::from_range_start(r);
+            bound_view bvv = {bv.prefix(), reverse_kind(bv.kind())};
+            return {position_in_partition_view::range_tag_t(), bvv};
+        } else {
+            return position_in_partition_view::for_range_end(r);
+        }
+    }
+
     mutation_fragment_opt read_next() {
         if (!_next_row && !_no_more_rows_in_current_range) {
             _next_row = _reader.next_row(*_current_ck_range, _last_entry, _last_rts);
@@ -341,7 +362,7 @@ private:
             return std::exchange(_next_row, {});
         } else {
             _no_more_rows_in_current_range = true;
-            auto mf = _reader.next_range_tombstone(*_current_ck_range, _last_entry, _last_rts, position_in_partition_view::for_range_end(*_current_ck_range));
+            auto mf = _reader.next_range_tombstone(*_current_ck_range, _last_entry, _last_rts, for_range_end_in_half_reversed(*_current_ck_range));
             if (mf) {
                 _last_rts = mf->as_range_tombstone().position();
             }
