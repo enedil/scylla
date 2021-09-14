@@ -199,17 +199,17 @@ class partition_snapshot_flat_reader : public flat_mutation_reader::impl, public
             return !_range_tombstones.empty();
         }
     public:
-        explicit lsa_partition_reader(const schema& s, reader_permit permit, partition_snapshot_ptr snp,
+        explicit lsa_partition_reader(const schema_ptr& s, reader_permit permit, partition_snapshot_ptr snp,
                                       logalloc::region& region, logalloc::allocating_section& read_section,
                                       bool digest_requested)
-            : _schema(s)
-            , _snapshot_schema(Reversing ? s.make_reversed() : s.shared_from_this())
+            : _schema(*s)
+            , _snapshot_schema(Reversing ? s->make_reversed() : s)
             , _permit(permit)
-            , _heap_cmp(s)
+            , _heap_cmp(*s)
             , _snapshot(std::move(snp))
             , _region(region)
             , _read_section(read_section)
-            , _rt_stream(s, permit)
+            , _rt_stream(*s, permit)
             , _digest_requested(digest_requested)
         { }
 
@@ -392,7 +392,7 @@ public:
         , _ck_ranges(std::move(crr))
         , _current_ck_range(_ck_ranges.begin())
         , _ck_range_end(_ck_ranges.end())
-        , _reader(*_schema, _permit, std::move(snp), region, read_section, digest_requested)
+        , _reader(_schema, _permit, std::move(snp), region, read_section, digest_requested)
     {
         _reader.with_reserve([&] {
             push_mutation_fragment(*_schema, _permit, partition_start(std::move(dk), _reader.partition_tombstone()));
