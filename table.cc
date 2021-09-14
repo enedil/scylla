@@ -177,9 +177,7 @@ table::make_reader(schema_ptr s,
     // https://github.com/scylladb/scylla/issues/185
 
     for (auto&& mt : *_memtables) {
-        readers.emplace_back(maybe_reverse(
-                    mt->make_flat_reader(maybe_reverse(s, slice), permit, range, slice, pc, trace_state, fwd, fwd_mr),
-                    slice, permit.max_result_size()));
+        readers.emplace_back(mt->make_flat_reader(s, permit, range, slice, pc, trace_state, fwd, fwd_mr));
     }
 
     if (cache_enabled() && !slice.options.contains(query::partition_slice::option::bypass_cache)

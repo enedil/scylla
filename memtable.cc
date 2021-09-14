@@ -408,8 +408,7 @@ class scanning_reader final : public flat_mutation_reader::impl, private iterato
     std::optional<dht::partition_range> _delegate_range;
     flat_mutation_reader_opt _delegate;
     const io_priority_class& _pc;
-    lw_shared_ptr<query::partition_slice> _slice_ptr;
-    query::partition_slice& _slice;
+    const query::partition_slice& _slice;
     mutation_reader::forwarding _fwd_mr;
 
     struct consumer {
@@ -443,14 +442,13 @@ public:
                      lw_shared_ptr<memtable> m,
                      reader_permit permit,
                      const dht::partition_range& range,
-                     lw_shared_ptr<query::partition_slice>&& slice,
+                     const query::partition_slice& slice,
                      const io_priority_class& pc,
                      mutation_reader::forwarding fwd_mr)
          : impl(s, std::move(permit))
          , iterator_reader(s, std::move(m), range)
          , _pc(pc)
-         , _slice_ptr(slice)
-         , _slice(*_slice_ptr)
+         , _slice(slice)
          , _fwd_mr(fwd_mr)
      { }
 
@@ -477,7 +475,10 @@ public:
                     });
                     if (key_and_snp) {
                         update_last(key_and_snp->first);
-                        auto cr = query::clustering_key_filter_ranges::get_ranges(*schema(), _slice, key_and_snp->first.key());
+
+                        const query::clustering_row_ranges& ranges = _slice.row_ranges(*schema(), key_and_snp->first.key());
+                        // TODO: when the slice passed from query finally changes format from half-reversed into native reversed, this line needs to change.
+                        auto cr = query::clustering_key_filter_ranges(ranges);
 
                         auto snp_schema = key_and_snp->second->schema();
                         bool digest_requested = _slice.options.contains<query::partition_slice::option::with_digest>();
@@ -714,8 +715,7 @@ memtable::make_flat_reader(schema_ptr s,
                       tracing::trace_state_ptr trace_state_ptr,
                       streamed_mutation::forwarding fwd,
                       mutation_reader::forwarding fwd_mr) {
-    auto _slice = make_lw_shared<query::partition_slice>(slice.options.contains(query::partition_slice::option::reversed) ? slice.half_reversed() : slice);
-    bool is_reversed = _slice->options.contains(query::partition_slice::option::reversed);
+    bool is_reversed = slice.options.contains(query::partition_slice::option::reversed);
     if (query::is_single_partition(range) && !fwd_mr) {
         const query::ring_position& pos = range.start()->value();
         auto snp = _read_section(*this, [&] () -> partition_snapshot_ptr {
@@ -731,13 +731,17 @@ memtable::make_flat_reader(schema_ptr s,
             return make_empty_flat_reader(std::move(s), std::move(permit));
         }
         auto dk = pos.as_decorated_key();
-        auto cr = query::clustering_key_filter_ranges::get_ranges(*s, slice, dk.key());
+
+        const query::clustering_row_ranges& ranges = slice.row_ranges(*s, dk.key());
+        // TODO: when the slice passed from query finally changes format from half-reversed into native reversed, this line needs to change.
+        auto cr = query::clustering_key_filter_ranges(ranges);
+
         bool digest_requested = slice.options.contains<query::partition_slice::option::with_digest>();
         auto rd = make_partition_snapshot_flat_reader_from_snp_schema(is_reversed, std::move(permit), std::move(dk), std::move(cr), std::move(snp), digest_requested, *this, _read_section, shared_from_this(), fwd, *this);
         rd.upgrade_schema(s);
         return rd;
     } else {
-        auto res = make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit), range, std::move(_slice), pc, fwd_mr);
+        auto res = make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit), range, slice, pc, fwd_mr);
         if (fwd == streamed_mutation::forwarding::yes) {
             return make_forwardable(std::move(res));
         } else {
@@ -753,7 +757,7 @@ memtable::make_flush_reader(schema_ptr s, reader_permit permit, const io_priorit
     } else {
         auto& full_slice = s->full_slice();
         return make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit),
-            query::full_partition_range, make_lw_shared<query::partition_slice>(full_slice), pc, mutation_reader::forwarding::no);
+            query::full_partition_range, full_slice, pc, mutation_reader::forwarding::no);
     }
 }
 
