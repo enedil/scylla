@@ -21,6 +21,7 @@
 
 
 #include <boost/test/unit_test.hpp>
+#include "mutation_fragment.hh"
 #include "service/priority_manager.hh"
 #include "database.hh"
 #include "utils/UUID_gen.hh"
@@ -39,6 +40,7 @@
 #include "test/lib/random_utils.hh"
 #include "test/lib/log.hh"
 #include "test/lib/reader_concurrency_semaphore.hh"
+#include "partition_slice_builder.hh"
 
 static api::timestamp_type next_timestamp() {
     static thread_local api::timestamp_type next_timestamp = 1;
