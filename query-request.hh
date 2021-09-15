@@ -44,6 +44,7 @@ using range = wrapping_range<T>;
 
 using ring_position = dht::ring_position;
 using clustering_range = nonwrapping_range<clustering_key_prefix>;
+clustering_range reverse_clustering_range(const clustering_range& range);
 
 extern const dht::partition_range full_partition_range;
 extern const clustering_range full_clustering_range;
