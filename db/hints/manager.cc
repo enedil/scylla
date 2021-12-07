@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <seastar/core/future.hh>
 #include <seastar/core/seastar.hh>
+#include <seastar/util/alloc_failure_injector.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/gate.hh>
 #include <seastar/core/abort_source.hh>
@@ -239,7 +240,16 @@ bool manager::end_point_hints_manager::store_hint(schema_ptr s, lw_shared_ptr<co
             return with_shared(file_update_mutex(), [this, fm, s, tr_state] () mutable -> future<> {
                 return get_or_load().then([this, fm = std::move(fm), s = std::move(s), tr_state] (hints_store_ptr log_ptr) mutable {
                     commitlog_entry_writer cew(s, *fm, db::commitlog::force_sync::no);
-                    return log_ptr->add_entry(s->id(), cew, db::timeout_clock::now() + _shard_manager.hint_file_write_timeout);
+                    try {
+                        // each allocation in the block will fail
+                        memory::local_failure_injector().fail_after(0);
+                        auto ret = log_ptr->add_entry(s->id(), cew, db::timeout_clock::now() + _shard_manager.hint_file_write_timeout);
+                        memory::local_failure_injector().cancel();
+                        return ret;
+                    } catch (...) {
+                        memory::local_failure_injector().cancel();
+                        throw;
+                    }
                 }).then([this, tr_state] (db::rp_handle rh) {
                     auto rp = rh.release();
                     if (_last_written_rp < rp) {
