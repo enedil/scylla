@@ -115,6 +115,7 @@ static constexpr auto AGGREGATES = "aggregates";
 static constexpr auto INDEXES = "indexes";
 static constexpr auto VIEW_VIRTUAL_COLUMNS = "view_virtual_columns"; // Scylla specific
 static constexpr auto COMPUTED_COLUMNS = "computed_columns"; // Scylla specific
+static constexpr auto TODO_ONE_TO_MANY_VIEW = "todo_one_to_many_view"; // Scylla specific
 static constexpr auto SCYLLA_TABLE_SCHEMA_HISTORY = "scylla_table_schema_history"; // Scylla specific;
 
 schema_ptr columns();
@@ -125,6 +126,7 @@ schema_ptr tables();
 schema_ptr scylla_tables(schema_features features = schema_features::full());
 schema_ptr views();
 schema_ptr computed_columns();
+schema_ptr todo_one_to_many_view();
 // Belongs to the "system" keyspace
 schema_ptr scylla_table_schema_history();
 

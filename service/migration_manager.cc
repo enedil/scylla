@@ -100,6 +100,7 @@ void migration_manager::init_messaging_service()
         _feature_listeners.push_back(_feat.cdc.when_enabled(update_schema));
         _feature_listeners.push_back(_feat.per_table_partitioners.when_enabled(update_schema));
         _feature_listeners.push_back(_feat.computed_columns.when_enabled(update_schema));
+        _feature_listeners.push_back(_feat.todo_one_to_many_view.when_enabled(update_schema));
     }
 
     _messaging.register_definitions_update([this] (const rpc::client_info& cinfo, std::vector<frozen_mutation> fm, rpc::optional<std::vector<canonical_mutation>> cm) {

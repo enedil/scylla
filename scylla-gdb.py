@@ -4883,6 +4883,7 @@ class scylla_features(gdb.Command):
     "CORRECT_STATIC_COMPACT_IN_MC": true
     "DIGEST_INSENSITIVE_TO_EXPIRY": true
     "COMPUTED_COLUMNS": true
+    "TODO_ONE_TO_MANY_VIEW": true
     """
 
     def __init__(self):
