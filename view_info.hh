@@ -25,6 +25,7 @@ class view_info final {
     mutable std::optional<query::partition_slice> _partition_slice;
     db::view::base_info_ptr _base_info;
     mutable bool _has_computed_column_depending_on_base_non_primary_key;
+    todo_one_to_many_view_computation_ptr _todo_one_to_many_view_computation;
 public:
     view_info(const schema& schema, const raw_view_info& raw_view_info);
 
@@ -46,6 +47,13 @@ public:
 
     const sstring& where_clause() const {
         return _raw.where_clause();
+    }
+
+    todo_one_to_many_view_computation_ptr todo_one_to_many_view_computation() const {
+        if (_todo_one_to_many_view_computation) {
+            return _todo_one_to_many_view_computation->clone();
+        }
+        return {};
     }
 
     cql3::statements::select_statement& select_statement() const;

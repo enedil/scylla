@@ -489,8 +489,9 @@ class raw_view_info final {
     sstring _base_name;
     bool _include_all_columns;
     sstring _where_clause;
+    bytes_opt _todo_one_to_many_view_computation;
 public:
-    raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause);
+    raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause, bytes_opt todo_one_to_many_view_computation);
 
     const utils::UUID& base_id() const {
         return _base_id;
@@ -506,6 +507,10 @@ public:
 
     const sstring& where_clause() const {
         return _where_clause;
+    }
+
+    const bytes_opt todo_one_to_many_view_computation() const {
+        return _todo_one_to_many_view_computation;
     }
 
     friend bool operator==(const raw_view_info&, const raw_view_info&);

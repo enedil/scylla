@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: (AGPL-3.0-or-later and Apache-2.0)
  */
 
+#include <memory>
 #include <seastar/core/shared_ptr.hh>
 
 #include "index/secondary_index_manager.hh"
@@ -215,21 +216,10 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
             builder.with_column(index_target->name(), index_target->type, column_kind::partition_key);
         } else {
             bytes key_column_name = get_available_computed_collection_column_name(*schema);
-            column_computation_ptr collection_column_computation_ptr = [&name = index_target->name(), target_type] {
-                switch (target_type) {
-                    case cql3::statements::index_target::target_type::keys:
-                        return collection_column_computation::for_keys(name);
-                    case cql3::statements::index_target::target_type::collection_values:
-                        return collection_column_computation::for_values(name);
-                    case cql3::statements::index_target::target_type::keys_and_values:
-                        return collection_column_computation::for_entries(name);
-                    default:
-                        throw std::logic_error(format("create_view_for_index: invalid target_type, received {}", to_sstring(target_type)));
-                }
-            }().clone();
 
             data_type t = type_for_computed_column(target_type, *index_target->type);
-            builder.with_computed_column(key_column_name, t, column_kind::partition_key, std::move(collection_column_computation_ptr));
+            builder.with_computed_column(key_column_name, t, column_kind::partition_key, std::make_unique<null_column_computation>());
+#warning TODO_ONE_TO_MANY_VIEW add comments on the purpose of null column computation
         }
         // Additional token column is added to ensure token order on secondary index queries
         bytes token_column_name = get_available_token_column_name(*schema);
@@ -256,6 +246,19 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
         builder.with_column(col.name(), col.type, column_kind::clustering_key);
     }
 
+    auto collection_column_computation_ptr = [&name = index_target->name(), target_type] {
+        switch (target_type) {
+            case cql3::statements::index_target::target_type::keys:
+                return collection_column_computation::for_keys(name);
+            case cql3::statements::index_target::target_type::collection_values:
+                return collection_column_computation::for_values(name);
+            case cql3::statements::index_target::target_type::keys_and_values:
+                return collection_column_computation::for_entries(name);
+            default:
+                throw std::logic_error(format("create_view_for_index: invalid target_type, received {}", to_sstring(target_type)));
+        }
+    };
+
     // This column needs to be after the base clustering key.
     if (!im.local()) {
         // If two cells within the same collection share the same value but not liveness information, then
@@ -264,7 +267,8 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
         if (target_type == cql3::statements::index_target::target_type::collection_values) {
             data_type t = type_for_computed_column(cql3::statements::index_target::target_type::keys, *index_target->type);
             bytes column_name = get_available_column_name(*schema, "keys_for_values_idx");
-            builder.with_computed_column(column_name, t, column_kind::clustering_key, collection_column_computation::for_keys(index_target->name()).clone());
+#warning TODO_ONE_TO_MANY_VIEW add comments on the purpose of null column computation
+            builder.with_computed_column(column_name, t, column_kind::clustering_key, std::make_unique<null_column_computation>());
         }
     }
 
@@ -274,7 +278,15 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
         }
     }
     const sstring where_clause = format("{} IS NOT NULL", index_target->name_as_cql_string());
-    builder.with_view_info(*schema, false, where_clause);
+
+    switch (target_type) {
+        case cql3::statements::index_target::target_type::keys:
+        case cql3::statements::index_target::target_type::collection_values:
+        case cql3::statements::index_target::target_type::keys_and_values:
+            builder.with_view_info(*schema, false, where_clause, collection_column_computation_ptr().serialize());
+        default:
+            builder.with_view_info(*schema, false, where_clause);
+    }
     return view_ptr{builder.build()};
 }
 

@@ -21,6 +21,7 @@
 #include "schema_builder.hh"
 #include "map_difference.hh"
 #include "utils/UUID_gen.hh"
+#include <algorithm>
 #include <seastar/coroutine/all.hh>
 #include "log.hh"
 #include "frozen_schema.hh"
@@ -161,6 +162,8 @@ static future<> do_merge_schema(distributed<service::storage_proxy>&, std::vecto
 
 using computed_columns_map = std::unordered_map<bytes, column_computation_ptr>;
 static computed_columns_map get_computed_columns(const schema_mutations& sm);
+static bytes_opt get_todo_one_to_many_view(const schema_mutations& sm);
+//static std::unique_ptr<todo_one_to_many_view_computation> get_todo_one_to_many_view(const schema_mutations& sm);
 
 static std::vector<column_definition> create_columns_from_column_rows(
                 const schema_ctxt& ctxt,
@@ -189,6 +192,12 @@ static void add_index_to_schema_mutation(schema_ptr table,
 static void drop_column_from_schema_mutation(schema_ptr schema_table, schema_ptr table,
                 const sstring& column_name, long timestamp,
                 std::vector<mutation>&);
+
+static void drop_todo_one_to_many_view_from_schema_mutation(
+        schema_ptr schema_table,
+        schema_ptr table,
+        long timestamp,
+        std::vector<mutation>& mutations);
 
 static void drop_index_from_schema_mutation(schema_ptr table,
                 const index_metadata& column, long timestamp,
@@ -440,7 +449,7 @@ static schema_ptr todo_one_to_many_view_schema(const char* columns_table_name) {
         // partition key
         {{"keyspace_name", utf8_type}},
         // clustering key
-        {{"view_name", utf8_type}, {"base_column_name", utf8_type}},
+        {{"view_name", utf8_type} /*, {"base_column_name", utf8_type} */},
         // regular columns
         {{"computation_type", utf8_type}, {"computation", bytes_type}},
         // static columns
@@ -2265,6 +2274,7 @@ static schema_mutations make_table_mutations(schema_ptr table, api::timestamp_ty
     }
 
     return schema_mutations{std::move(m), std::move(columns_mutation), std::nullopt, std::move(computed_columns_mutation),
+                            std::move(todo_one_to_many_view_mutation),
                             std::move(indices_mutation), std::move(dropped_columns_mutation),
                             std::move(scylla_tables_mutation)};
 }
@@ -2429,6 +2439,7 @@ static void make_drop_table_or_view_mutations(schema_ptr schema_table,
     for (auto& column : table_or_view->dropped_columns() | boost::adaptors::map_keys) {
         drop_column_from_schema_mutation(dropped_columns(), table_or_view, column, timestamp, mutations);
     }
+    drop_todo_one_to_many_view_from_schema_mutation(todo_one_to_many_view(), table_or_view, timestamp, mutations);
     mutation m1{scylla_tables(), pkey};
     m1.partition().apply_delete(*scylla_tables(), ckey, tombstone(timestamp, gc_clock::now()));
     mutations.emplace_back(m1);
@@ -2453,7 +2464,7 @@ std::vector<mutation> make_drop_table_mutations(lw_shared_ptr<keyspace_metadata>
 
 static future<schema_mutations> read_table_mutations(distributed<service::storage_proxy>& proxy, const qualified_name& table, schema_ptr s)
 {
-    auto&& [cf_m, col_m, vv_col_m, c_col_m, todo_one_to_many_view_, dropped_m, idx_m, st_m] = co_await coroutine::all(
+    auto&& [cf_m, col_m, vv_col_m, c_col_m, todo_one_to_many_view_m, dropped_m, idx_m, st_m] = co_await coroutine::all(
         [&] { return read_schema_partition_for_table(proxy, s, table.keyspace_name, table.table_name); },
         [&] { return read_schema_partition_for_table(proxy, columns(), table.keyspace_name, table.table_name); },
         [&] { return read_schema_partition_for_table(proxy, view_virtual_columns(), table.keyspace_name, table.table_name); },
@@ -2464,7 +2475,7 @@ static future<schema_mutations> read_table_mutations(distributed<service::storag
         [&] { return read_schema_partition_for_table(proxy, scylla_tables(), table.keyspace_name, table.table_name); }
     );
 #warning TODO_ONE_TO_MANY_VIEW
-    co_return schema_mutations{std::move(cf_m), std::move(col_m), std::move(vv_col_m), std::move(c_col_m), std::move(idx_m), std::move(dropped_m), std::move(st_m)};
+    co_return schema_mutations{std::move(cf_m), std::move(col_m), std::move(vv_col_m), std::move(c_col_m), std::move(todo_one_to_many_view_m), std::move(idx_m), std::move(dropped_m), std::move(st_m)};
 #if 0
         // FIXME:
     Row serializedTriggers = readSchemaPartitionForTable(TRIGGERS, ksName, cfName);
@@ -2694,6 +2705,7 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
         }
     }
 
+    //auto todo_one_to_many_view_field = get_todo_one_to_many_view(sm);
     auto computed_columns = get_computed_columns(sm);
     std::vector<column_definition> column_defs = create_columns_from_column_rows(
             ctxt,
@@ -2782,6 +2794,18 @@ static void add_computed_column_to_schema_mutation(schema_ptr table,
     m.set_clustered_cell(ckey, "computation", data_value(column.get_computation().serialize()), timestamp);
 }
 
+static void add_todo_one_to_many_view_to_schema_mutation(schema_ptr table,
+        api::timestamp_type timestamp,
+        mutation& m) {
+    auto ckey = clustering_key::from_exploded(*m.schema(), {utf8_type->decompose(table->cf_name())});
+
+    if (auto todo_one_to_many_view = table->view_info()->todo_one_to_many_view_computation()) {
+        auto computation = todo_one_to_many_view->serialize();
+#warning EXACT format of data?
+        m.set_clustered_cell(ckey, "computation", data_value(std::move(computation)), timestamp);
+    }
+}
+
 sstring serialize_kind(column_kind kind)
 {
     switch (kind) {
@@ -2867,6 +2891,20 @@ static void drop_column_from_schema_mutation(
     mutations.emplace_back(m);
 }
 
+static void drop_todo_one_to_many_view_from_schema_mutation(
+        schema_ptr schema_table,
+        schema_ptr table,
+        long timestamp,
+        std::vector<mutation>& mutations)
+{
+    auto pkey = partition_key::from_singular(*schema_table, table->ks_name());
+    auto ckey = clustering_key::from_exploded(*schema_table, {utf8_type->decompose(table->cf_name())});
+
+    mutation m{schema_table, pkey};
+    m.partition().apply_delete(*schema_table, ckey, tombstone(timestamp, gc_clock::now()));
+    mutations.emplace_back(m);
+}
+
 static computed_columns_map get_computed_columns(const schema_mutations& sm) {
     if (!sm.computed_columns_mutation()) {
         return {};
@@ -2876,6 +2914,25 @@ static computed_columns_map get_computed_columns(const schema_mutations& sm) {
             computed_result.rows() | boost::adaptors::transformed([] (const query::result_set_row& row) {
         return computed_columns_map::value_type{to_bytes(row.get_nonnull<sstring>("column_name")), column_computation::deserialize(row.get_nonnull<bytes>("computation"))};
     }));
+}
+
+static bytes_opt get_todo_one_to_many_view(const schema_mutations& sm) {
+#warning TODO_ONE_TO_MANY_VIEW
+    if (!sm.todo_one_to_many_view()) {
+        return {};
+    }
+    query::result_set computed_result(*sm.todo_one_to_many_view());
+    auto& mut = *sm.todo_one_to_many_view();
+    diff_logger.error("mutacja: {}", mut);
+    if (computed_result.empty()) {
+        return {};
+    }
+    if (computed_result.rows().size() != 1) {
+        on_internal_error(diff_logger, fmt::format("computed result size: {}", computed_result.rows().size()));
+    }
+    auto& row = computed_result.rows().front();
+    return row.get_nonnull<bytes>("computation");
+    //return todo_one_to_many_view_computation::deserialize(row.get_nonnull<bytes>("computation"));
 }
 
 static std::vector<column_definition> create_columns_from_column_rows(const schema_ctxt& ctxt,
@@ -2952,6 +3009,12 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     schema_builder builder{ks_name, cf_name, id};
     prepare_builder_from_table_row(ctxt, builder, row);
 
+    if (sm.todo_one_to_many_view()) {
+        auto& mut = *sm.todo_one_to_many_view();
+        diff_logger.error("mut: {}", mut);
+    }
+    auto todo_one_to_many_view_field = get_todo_one_to_many_view(sm);
+#warning TODO_ONE_TO_MANY_VIEW add the info into view_info
     auto computed_columns = get_computed_columns(sm);
     auto column_defs = create_columns_from_column_rows(ctxt, query::result_set(sm.columns_mutation()), ks_name, cf_name, false, column_view_virtual::no, computed_columns);
     for (auto&& cdef : column_defs) {
@@ -2975,7 +3038,7 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     auto include_all_columns = row.get_nonnull<bool>("include_all_columns");
     auto where_clause = row.get_nonnull<sstring>("where_clause");
 
-    builder.with_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+    builder.with_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause), std::move(todo_one_to_many_view_field));
     return view_ptr(builder.build());
 }
 
@@ -3027,6 +3090,7 @@ static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type t
     mutation columns_mutation(columns(), pkey);
     mutation view_virtual_columns_mutation(view_virtual_columns(), pkey);
     mutation computed_columns_mutation(computed_columns(), pkey);
+    mutation todo_one_to_many_view_mutation(todo_one_to_many_view(), pkey);
     mutation dropped_columns_mutation(dropped_columns(), pkey);
     mutation indices_mutation(indexes(), pkey);
 
@@ -3052,7 +3116,10 @@ static schema_mutations make_view_mutations(view_ptr view, api::timestamp_type t
 
     auto scylla_tables_mutation = make_scylla_tables_mutation(view, timestamp);
 
+    add_todo_one_to_many_view_to_schema_mutation(view, timestamp, todo_one_to_many_view_mutation);
+
     return schema_mutations{std::move(m), std::move(columns_mutation), std::move(view_virtual_columns_mutation), std::move(computed_columns_mutation),
+                            std::move(todo_one_to_many_view_mutation),
                             std::move(indices_mutation), std::move(dropped_columns_mutation),
                             std::move(scylla_tables_mutation)};
 }
@@ -3262,6 +3329,9 @@ std::vector<schema_ptr> all_tables(schema_features features) {
     };
     if (features.contains<schema_feature::VIEW_VIRTUAL_COLUMNS>()) {
         result.emplace_back(view_virtual_columns());
+    }
+    if (features.contains<schema_feature::TODO_ONE_TO_MANY_VIEW>()) {
+        result.emplace_back(todo_one_to_many_view());
     }
     if (features.contains<schema_feature::COMPUTED_COLUMNS>()) {
         result.emplace_back(computed_columns());
