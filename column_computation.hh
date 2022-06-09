@@ -9,6 +9,7 @@
 #pragma once
 
 #include "bytes.hh"
+#include <memory>
 
 class schema;
 class partition_key;
@@ -96,7 +97,26 @@ public:
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
 };
 
-class collection_column_computation final : public column_computation {
+class null_column_computation : public column_computation {
+public:
+    virtual column_computation_ptr clone() const override {
+        return std::make_unique<null_column_computation>(*this);
+    }
+    virtual bytes serialize() const override;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+};
+
+class todo_one_to_many_view_computation;
+using todo_one_to_many_view_computation_ptr = std::unique_ptr<todo_one_to_many_view_computation>;
+
+class todo_one_to_many_view_computation {
+public:
+    virtual bytes serialize() const = 0;
+    virtual todo_one_to_many_view_computation_ptr clone() const = 0;
+    static todo_one_to_many_view_computation_ptr deserialize(bytes_view raw);
+};
+
+class collection_column_computation final : public todo_one_to_many_view_computation {
     enum class kind {
         keys,
         values,
@@ -121,16 +141,16 @@ public:
     static collection_column_computation for_entries(const bytes& collection_name) {
         return {collection_name, kind::entries};
     }
-    static column_computation_ptr for_target_type(std::string_view type, const bytes& collection_name);
+    static todo_one_to_many_view_computation_ptr for_target_type(std::string_view type, const bytes& collection_name);
 
     virtual bytes serialize() const override;
-    virtual bytes compute_value(const schema& schema, const partition_key& key) const override;
-    virtual column_computation_ptr clone() const override {
+    //virtual bytes compute_value(const schema& schema, const partition_key& key) const override;
+    virtual todo_one_to_many_view_computation_ptr clone() const override {
         return std::make_unique<collection_column_computation>(*this);
     }
-    virtual bool depends_on_non_primary_key_column() const override {
-        return true;
-    }
+    //virtual bool depends_on_non_primary_key_column() const override {
+    //    return true;
+    //}
 
     std::vector<db::view::bytes_with_action> compute_values_with_action(const schema& schema, const partition_key& key, const clustering_row& row, const std::optional<clustering_row>& existing) const;
 };

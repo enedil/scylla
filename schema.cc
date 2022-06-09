@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include <memory>
 #include <seastar/core/on_internal_error.hh>
 #include <map>
 #include "timestamp.hh"
@@ -1205,8 +1206,8 @@ void schema_builder::prepare_dense_schema(schema::raw_schema& raw) {
     }
 }
 
-schema_builder& schema_builder::with_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause) {
-    _view_info = raw_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+schema_builder& schema_builder::with_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause, bytes_opt todo_one_to_many_view) {
+    _view_info = raw_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause), std::move(todo_one_to_many_view));
     return *this;
 }
 
@@ -1665,11 +1666,12 @@ schema_ptr schema::get_reversed() const {
     });
 }
 
-raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause)
+raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool include_all_columns, sstring where_clause, bytes_opt todo_one_to_many_view_computation)
         : _base_id(std::move(base_id))
         , _base_name(std::move(base_name))
         , _include_all_columns(include_all_columns)
         , _where_clause(where_clause)
+        , _todo_one_to_many_view_computation(todo_one_to_many_view_computation)
 { }
 
 column_computation_ptr column_computation::deserialize(bytes_view raw) {
@@ -1688,6 +1690,10 @@ column_computation_ptr column_computation::deserialize(bytes_view raw) {
     if (type == "token_v2") {
         return std::make_unique<token_column_computation>();
     }
+    if (type == "null") {
+        return std::make_unique<null_column_computation>();
+    }
+    /*
     if (type.starts_with("collection_")) {
         const rjson::value* collection_name = rjson::find(parsed, "collection_name");
 
@@ -1699,7 +1705,32 @@ column_computation_ptr column_computation::deserialize(bytes_view raw) {
             }
         }
     }
+    */
     throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", *type_json, parsed));
+}
+
+todo_one_to_many_view_computation_ptr todo_one_to_many_view_computation::deserialize(bytes_view raw) {
+    rjson::value parsed = rjson::parse(std::string_view(reinterpret_cast<const char*>(raw.begin()), reinterpret_cast<const char*>(raw.end())));
+    if (!parsed.IsObject()) {
+        throw std::runtime_error(format("TODO better message Invalid column computation value: {}", parsed));
+    }
+    const rjson::value* type_json = rjson::find(parsed, "type");
+    if (!type_json || !type_json->IsString()) {
+        throw std::runtime_error(format("Type {} is not convertible to string", *type_json));
+    }
+    const std::string_view type = rjson::to_string_view(*type_json);
+    if (type.starts_with("collection_")) {
+        const rjson::value* collection_name = rjson::find(parsed, "collection_name");
+
+        if (collection_name && collection_name->IsString()) {
+            auto collection = rjson::to_string_view(*collection_name);
+            auto collection_as_bytes = bytes(collection.begin(), collection.end());
+            if (auto collection = collection_column_computation::for_target_type(type, collection_as_bytes)) {
+                return collection->clone();
+            }
+        }
+    }
+    throw std::runtime_error(format("TODO fixed error message - Incorrect column computation type {} found when parsing {}", *type_json, parsed));
 }
 
 bytes legacy_token_column_computation::serialize() const {
@@ -1723,6 +1754,16 @@ bytes_opt token_column_computation::compute_value(const schema& schema, const pa
     return long_type->decompose(long_value);
 }
 
+bytes null_column_computation::serialize() const {
+    rjson::value serialized = rjson::empty_object();
+    rjson::add(serialized, "type", rjson::from_string("null"));
+    return to_bytes(rjson::print(serialized));
+}
+
+bytes_opt null_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
+    return {};
+}
+
 bytes collection_column_computation::serialize() const {
     rjson::value serialized = rjson::empty_object();
     const char* type = nullptr;
@@ -1742,7 +1783,7 @@ bytes collection_column_computation::serialize() const {
     return to_bytes(rjson::print(serialized));
 }
 
-column_computation_ptr collection_column_computation::for_target_type(std::string_view type, const bytes& collection_name) {
+todo_one_to_many_view_computation_ptr collection_column_computation::for_target_type(std::string_view type, const bytes& collection_name) {
     if (type == "collection_keys") {
         return collection_column_computation::for_keys(collection_name).clone();
     }
@@ -1825,9 +1866,6 @@ void collection_column_computation::operate_on_collection_entries(
     }
 }
 
-bytes collection_column_computation::compute_value(const schema&, const partition_key&) const {
-    throw std::runtime_error(fmt::format("{}: not supported", __PRETTY_FUNCTION__));
-}
 
 std::vector<db::view::bytes_with_action> collection_column_computation::compute_values_with_action(const schema& schema, const partition_key& key, const clustering_row& update, const std::optional<clustering_row>& existing) const {
     using collection_kv = std::pair<bytes_view, atomic_cell_view>;

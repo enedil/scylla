@@ -20,16 +20,18 @@ class schema_mutations {
     mutation _columns;
     mutation_opt _view_virtual_columns;
     mutation_opt _computed_columns;
+    mutation_opt _todo_one_to_many_view;
     mutation_opt _indices;
     mutation_opt _dropped_columns;
     mutation_opt _scylla_tables;
 public:
-    schema_mutations(mutation columnfamilies, mutation columns, mutation_opt view_virtual_columns, mutation_opt computed_columns, mutation_opt indices, mutation_opt dropped_columns,
+    schema_mutations(mutation columnfamilies, mutation columns, mutation_opt view_virtual_columns, mutation_opt computed_columns, mutation_opt todo_one_to_many_view, mutation_opt indices, mutation_opt dropped_columns,
         mutation_opt scylla_tables)
             : _columnfamilies(std::move(columnfamilies))
             , _columns(std::move(columns))
             , _view_virtual_columns(std::move(view_virtual_columns))
             , _computed_columns(std::move(computed_columns))
+            , _todo_one_to_many_view(std::move(todo_one_to_many_view))
             , _indices(std::move(indices))
             , _dropped_columns(std::move(dropped_columns))
             , _scylla_tables(std::move(scylla_tables))
@@ -64,6 +66,10 @@ public:
 
     const mutation_opt& computed_columns_mutation() const {
         return _computed_columns;
+    }
+
+    const mutation_opt& todo_one_to_many_view() const {
+        return _todo_one_to_many_view;
     }
 
     const mutation_opt& scylla_tables() const {

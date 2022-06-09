@@ -73,7 +73,11 @@ view_info::view_info(const schema& schema, const raw_view_info& raw_view_info)
         : _schema(schema)
         , _raw(raw_view_info)
         , _has_computed_column_depending_on_base_non_primary_key(false)
-{ }
+{
+    if (_raw.todo_one_to_many_view_computation()) {
+        _todo_one_to_many_view_computation = todo_one_to_many_view_computation::deserialize(*_raw.todo_one_to_many_view_computation());
+    }
+}
 
 cql3::statements::select_statement& view_info::select_statement() const {
     if (!_select_statement) {
