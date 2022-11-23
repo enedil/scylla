@@ -588,13 +588,15 @@ SEASTAR_THREAD_TEST_CASE(test_frozen_mutation_consumer) {
     BOOST_REQUIRE(res.result);
     BOOST_REQUIRE_EQUAL(*res.result, m);
 
+    auto rs = s->make_reversed();
+
     // consume_in_reverse::yes
-    rebuilder = mutation_rebuilder_v2(s);
+    rebuilder = mutation_rebuilder_v2(rs);
     res = fm.consume(s, rebuilder, consume_in_reverse::yes);
     BOOST_REQUIRE(res.result);
     BOOST_REQUIRE_EQUAL(*res.result, m);
 
-    rebuilder = mutation_rebuilder_v2(s);
+    rebuilder = mutation_rebuilder_v2(rs);
     res = fm.consume_gently(s, rebuilder, consume_in_reverse::yes).get();
     BOOST_REQUIRE(res.result);
     BOOST_REQUIRE_EQUAL(*res.result, m);
