@@ -583,15 +583,30 @@ SEASTAR_THREAD_TEST_CASE(test_frozen_mutation_consumer) {
     const auto& rebuilt = *res.result;
     BOOST_REQUIRE_EQUAL(rebuilt, m);
 
+    rebuilder = mutation_rebuilder_v2(s);
+    res = fm.consume_gently(s, rebuilder).get();
+    BOOST_REQUIRE(res.result);
+    BOOST_REQUIRE_EQUAL(*res.result, m);
+
     // consume_in_reverse::yes
     rebuilder = mutation_rebuilder_v2(s);
     res = fm.consume(s, rebuilder, consume_in_reverse::yes);
     BOOST_REQUIRE(res.result);
     BOOST_REQUIRE_EQUAL(*res.result, m);
 
+    rebuilder = mutation_rebuilder_v2(s);
+    res = fm.consume_gently(s, rebuilder, consume_in_reverse::yes).get();
+    BOOST_REQUIRE(res.result);
+    BOOST_REQUIRE_EQUAL(*res.result, m);
+
     // consume_in_reverse::legacy_half_reverse
     rebuilder = mutation_rebuilder_v2(s);
     res = fm.consume(s, rebuilder, consume_in_reverse::legacy_half_reverse);
+    BOOST_REQUIRE(res.result);
+    BOOST_REQUIRE_EQUAL(*res.result, m);
+
+    rebuilder = mutation_rebuilder_v2(s);
+    res = fm.consume_gently(s, rebuilder, consume_in_reverse::legacy_half_reverse).get();
     BOOST_REQUIRE(res.result);
     BOOST_REQUIRE_EQUAL(*res.result, m);
 }
