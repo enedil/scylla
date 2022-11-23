@@ -835,7 +835,7 @@ private:
         }
     };
 
-
+    friend class vector_deserializer<T, !IsForward>;
 public:
     vector_deserializer() noexcept
         : _in(simple_input_stream())
@@ -850,6 +850,11 @@ public:
             fill_substreams();
         }
     }
+
+    template <bool OtherIsForward>
+    explicit vector_deserializer(vector_deserializer<T, OtherIsForward>&& o)
+        : vector_deserializer(std::move(o._in))
+    {}
 
     // Get the number of items in the vector
     size_t size() const noexcept {
