@@ -12,6 +12,7 @@
 #include <boost/range/algorithm_ext/push_back.hpp>
 
 #include <boost/test/unit_test.hpp>
+#include "mutation_consumer.hh"
 #include "query-result-set.hh"
 #include "query-result-writer.hh"
 
@@ -575,9 +576,22 @@ SEASTAR_THREAD_TEST_CASE(test_frozen_mutation_consumer) {
     BOOST_REQUIRE_EQUAL(um, m);
 
     // Rebuild mutation by consuming from the frozen_mutation
+    // consume_in_reverse::no (default)
     mutation_rebuilder_v2 rebuilder(s);
     auto res = fm.consume(s, rebuilder);
     BOOST_REQUIRE(res.result);
     const auto& rebuilt = *res.result;
     BOOST_REQUIRE_EQUAL(rebuilt, m);
+
+    // consume_in_reverse::yes
+    rebuilder = mutation_rebuilder_v2(s);
+    res = fm.consume(s, rebuilder, consume_in_reverse::yes);
+    BOOST_REQUIRE(res.result);
+    BOOST_REQUIRE_EQUAL(*res.result, m);
+
+    // consume_in_reverse::legacy_half_reverse
+    rebuilder = mutation_rebuilder_v2(s);
+    res = fm.consume(s, rebuilder, consume_in_reverse::legacy_half_reverse);
+    BOOST_REQUIRE(res.result);
+    BOOST_REQUIRE_EQUAL(*res.result, m);
 }
