@@ -25,7 +25,7 @@
 #include "types/user.hh"
 
 using namespace db;
-
+static logger mpvlog("mpv");
 static_assert(MutationViewVisitor<mutation_partition_view_virtual_visitor>);
 
 mutation_partition_view_virtual_visitor::~mutation_partition_view_virtual_visitor() = default;
@@ -286,6 +286,7 @@ mutation_partition_view::accept_ordered_cookie<reverse>::rts_crs_iterators::rts_
 
 template <bool is_preemptible, consume_in_reverse reverse>
 mutation_partition_view::accept_ordered_result<reverse> mutation_partition_view::do_accept_ordered(const schema& schema, mutation_partition_view_virtual_visitor& visitor, accept_ordered_cookie<reverse> cookie) const {
+    static_assert(reverse != consume_in_reverse::legacy_half_reverse);
     auto in = _in;
     auto mpv = ser::deserialize(in, boost::type<ser::mutation_partition_view>());
 
@@ -434,7 +435,7 @@ void mutation_partition_view::accept_ordered(const schema& s, mutation_partition
         do_accept_ordered<false, consume_in_reverse::yes>(s, visitor, accept_ordered_cookie<consume_in_reverse::yes>{});
         break;
     case consume_in_reverse::legacy_half_reverse:
-        do_accept_ordered<false, consume_in_reverse::legacy_half_reverse>(s, visitor, accept_ordered_cookie<consume_in_reverse::legacy_half_reverse>{});
+        on_internal_error_noexcept(mpvlog, "do_accept_ordered called with deprecated legacy_half_reverse consumption order");
         break;
     }
 }
@@ -458,11 +459,7 @@ future<> mutation_partition_view::accept_gently_ordered(const schema& s, mutatio
         break;
     }
     case consume_in_reverse::legacy_half_reverse: {
-        accept_ordered_result<consume_in_reverse::legacy_half_reverse> res;
-        do {
-            res = do_accept_ordered<true, consume_in_reverse::legacy_half_reverse>(s, visitor, std::move(res.cookie));
-            co_await coroutine::maybe_yield();
-        } while (!res.stop);
+        on_internal_error_noexcept(mpvlog, "accept_gently_ordered called with deprecated legacy_half_reverse consumption order");
         break;
     }
     }
