@@ -276,10 +276,10 @@ future<> mutation_partition_view::do_accept_gently(const column_mapping& cm, Vis
 
 template <consume_in_reverse reverse>
 mutation_partition_view::accept_ordered_cookie<reverse>::rts_crs_iterators::rts_crs_iterators(ser::mutation_partition_view& mpv)
-    : rts(mpv.range_tombstones())
+    : rts(mpv.range_tombstones().to_forward<reverse==consume_in_reverse::no>())
     , rts_begin(rts.cbegin())
     , rts_end(rts.cend())
-    , crs(mpv.rows())
+    , crs(mpv.rows().to_forward<reverse==consume_in_reverse::no>())
     , crs_begin(crs.cbegin())
     , crs_end(crs.cend())
 {}
@@ -296,7 +296,7 @@ mutation_partition_view::accept_ordered_result<reverse> mutation_partition_view:
             cookie.schema = schema.shared_from_this();
         }
     }
-    const auto& s = *cookie.schema;
+    const class schema& s = *cookie.schema;
     const column_mapping& cm = s.get_column_mapping();
 
     if (!cookie.accepted_partition_tombstone) {
@@ -320,7 +320,7 @@ mutation_partition_view::accept_ordered_result<reverse> mutation_partition_view:
     }
 
     if (!cookie.iterators) {
-        cookie.iterators.emplace(typename accept_ordered_cookie<reverse>::rts_crs_iterators(mpv));
+        cookie.iterators.emplace(mpv);
     }
 
     auto rt_it = cookie.iterators->rts_begin;
@@ -359,6 +359,11 @@ mutation_partition_view::accept_ordered_result<reverse> mutation_partition_view:
             return;
         }
         rt = *rt_it;
+        if constexpr (reverse != consume_in_reverse::no) {
+            if (rt) {
+                rt->reverse();
+            }
+        }
         ++rt_it;
     };
 
